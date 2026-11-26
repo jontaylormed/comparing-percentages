@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comparing Percentages: Data Checks</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 16px auto; padding: 0 16px; background: #f5f6f8; color: #1b2430; line-height: 1.45; }
+  h1 { font-size: 1.3rem; }
+  .pass { color: #1b6436; } .fail { color: #8a3110; font-weight: 700; }
+  #summary { font-weight: 700; font-size: 1.1rem; }
+  iframe { width: 100%; height: 280px; border: 1px solid #8b95a3; background: #fff; }
+  li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<h1>Comparing Percentages: Data Checks</h1>
+<p>This page reads the published Census figures recorded in <code>sources.md</code> (Table S0502, ACS 2021 5-year, Seattle CCD) and checks the lesson against them. It checks every chart value, every number in the lesson's text, every calculation and every quiz answer key. Any number in the lesson that isn't a published figure or a listed calculation fails. Open it from the live site or a local web server, not as a file.</p>
+<div id="summary" role="status">Running...</div>
+<ol id="results"></ol>
+<iframe id="tool" src="index.html" title="The lesson being checked"></iframe>
+<script>
+(function () {
+  'use strict';
+  var results = [], fails = 0;
+  function check(name, ok, detail) { results.push([name, !!ok, detail || '']); if (!ok) fails++; }
+  function num(s) { var m = String(s).match(/-?[\d,]*\.?\d+/); return m ? parseFloat(m[0].replace(/,/g, '')) : null; }
+  function cells(line) { return line.split('|').slice(1, -1).map(function (c) { return c.trim(); }); }
+  function near(a, b, tol) { return Math.abs(a - b) <= (tol === undefined ? 1e-9 : tol); }
+
+  function run(win, sources) {
+    var doc = win.document;
+
+    // ---- The published figures, read from sources.md ----
+    var P = {}, published = [];
+    sources.split(/\r?\n/).forEach(function (l) {
+      if (!/^\| \d{3} \|/.test(l)) return;
+      var c = cells(l);
+      var val = function (t) { return /N\/A/.test(t) ? null : num(t); };
+      var moe = function (t) { var m = t.match(/±([\d,.]+)/); return m ? num(m[1]) : null; };
+      P[c[0]] = { label: c[1], T: val(c[3]), A: val(c[4]), B: val(c[5]), C: val(c[6]) };
+      [3, 4, 5, 6].forEach(function (i) { [val(c[i]), moe(c[i])].forEach(function (v) { if (v !== null) published.push(v); }); });
+    });
+    check('sources.md lists all 37 published rows the lesson uses', Object.keys(P).length === 37, Object.keys(P).length + ' rows');
+    function g(line, grp) { var v = P[line][grp]; return v === null ? 0 : v; }
+
+    // ---- 1. Every chart value matches its published row ----
+    var charts = {};
+    Object.keys(win.Chart.instances).forEach(function (k) { var ch = win.Chart.instances[k]; charts[ch.canvas.id] = ch; });
+    function byGroup(id, lines, label) {
+      var ch = charts[id];
+      if (!ch) { check(label + ': chart found', false); return; }
+      ['A', 'B', 'C'].forEach(function (grp, gi) {
+        var want = lines.map(function (ln) { return Array.isArray(ln) ? ln.reduce(function (s, x) { return s + g(x, grp); }, 0) : g(ln, grp); });
+        var got = ch.data.datasets[gi].data;
+        var ok = want.length === got.length && want.every(function (w, i) { return near(w, got[i], 1e-6); });
+        check(label + ', Group ' + grp + ': ' + got.join(', '), ok, ok ? '' : 'table: ' + want.map(function (w) { return Math.round(w * 10) / 10; }).join(', '));
+      });
+    }
+    var REGION = ['006', '009', '007', '005', '010', '008'];
+    byGroup('introRegionChart', REGION, 'Region of birth chart');
+    byGroup('introAgeChart', [['013', '014'], '015', '016', '017', '018', '019', '020', '021'], 'Age chart');
+    byGroup('introEduChart', ['048', '049', '050', '051', '052'], 'Education chart');
+    [['introHousingChart', '126', 'Homeownership chart'], ['introIncomeChart', '110', 'Income chart']].forEach(function (x) {
+      var got = charts[x[0]].data.datasets[0].data, want = ['A', 'B', 'C'].map(function (grp) { return g(x[1], grp); });
+      check(x[2] + ': ' + got.join(', '), want.every(function (w, i) { return near(w, got[i]); }), 'table: ' + want.join(', '));
+    });
+    ['A', 'B', 'C'].forEach(function (grp, gi) {
+      var got = charts.paradoxChart.data.datasets[gi].data;
+      check('Income and poverty chart, Group ' + grp + ': ' + got.join(', '), near(got[0], Math.round(g('110', grp) / 100) / 10) && near(got[1], g('113', grp)));
+      var abs = charts.absChart.data.datasets[gi].data;
+      check('Asian-born chart, Group ' + grp + ': ' + abs.join(', '), near(abs[0], g('006', grp)) && near(abs[1], Math.round(g('001', grp) * g('006', grp) / 100 / 100)));
+    });
+    var CD = win.eval('compareData');
+    var TOPICS = { education: ['052'], poverty: ['113', '114', '115'], homeown: ['126', '127'], citizenship: ['002', '003'], region: REGION };
+    Object.keys(TOPICS).forEach(function (t) {
+      ['A', 'B', 'C'].forEach(function (grp) {
+        var got = CD[t][grp.toLowerCase()], want = TOPICS[t].map(function (ln) { return g(ln, grp); });
+        check('Compare chart "' + t + '", Group ' + grp + ': ' + got.join(', '), want.every(function (w, i) { return near(w, got[i]); }), 'table: ' + want.join(', '));
+      });
+    });
+
+    // ---- 2. Every number in the lesson's text is published or a listed calculation ----
+    var CALC = [52518, 52518.2, 5000, 18.9, 2.2, 7.8, 38.5, 2.7, 6.8, 67.4, 109.4, 4.2, 2.1, 13.7, 31870, 31900, 11700, 20600, 61000, 7536, 0.607, 0.572,
+      12.1, 1.1, 1.3, 95.8, 75.4, 86.1, 75000, 12, 21, 2010, 2000, 2009, 2017, 2021, 100, 57, 41, 92, 54, 16, 18, 25, 44,
+      100000, 50000];   // the last two are the lesson's made-up example ("57% of 100,000 vs 57% of 50,000"), not data
+    var body = doc.body.cloneNode(true);
+    Array.prototype.forEach.call(body.querySelectorAll('script'), function (s) { s.remove(); });
+    var feedback = win.eval('correctFeedback'), wrong = win.eval('wrongFeedback');
+    var texts = [['page text', body.textContent]];
+    Object.keys(CD).forEach(function (t) { texts.push(['compare insight "' + t + '"', CD[t].insight]); });
+    Object.keys(feedback).forEach(function (q) { texts.push([q + ' feedback', feedback[q]], [q + ' wrong-answer feedback', wrong[q]]); });
+    var unknown = [];
+    texts.forEach(function (t) {
+      (t[1].match(/\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d*\.\d+|\d+/g) || []).forEach(function (s) {
+        var v = parseFloat(s.replace(/,/g, ''));
+        var ok = (Number.isInteger(v) && v <= 10) || published.some(function (p) { return near(p, v); }) || CALC.some(function (c) { return near(c, v); });
+        if (!ok) unknown.push(s + ' (' + t[0] + ')');
+      });
+    });
+    check('Every number in the text traces to the table or a listed calculation', unknown.length === 0, unknown.length ? 'untraced: ' + unknown.join('; ') : texts.length + ' text blocks scanned');
+
+    // ---- 3. Each calculation in the lesson is right ----
+    var CALCS = [
+      ['91,815 × 0.572 ≈ 52,518', near(Math.round(g('001', 'A') * g('006', 'A') / 100), 52518)],
+      ['Group C has about 5,000 more Asian-born people than Group A', near(Math.round((g('001', 'C') * g('006', 'C') - g('001', 'A') * g('006', 'A')) / 100 / 1000) * 1000, 5000)],
+      ['34.8 − 15.9 = 18.9 percentage points', near(g('052', 'A') - g('052', 'C'), 18.9, 1e-9)],
+      ['34.8 ÷ 15.9 ≈ 2.2×', near(Math.round(g('052', 'A') / g('052', 'C') * 10) / 10, 2.2)],
+      ['Poverty gap 18.4 − 10.6 = 7.8 points', near(g('113', 'A') - g('113', 'C'), 7.8, 1e-9)],
+      ['Homeownership gap 60.7 − 22.2 = 38.5 points', near(g('126', 'C') - g('126', 'A'), 38.5, 1e-9)],
+      ['60.7 ÷ 22.2 ≈ 2.7×', near(Math.round(g('126', 'C') / g('126', 'A') * 10) / 10, 2.7)],
+      ['Citizenship 79.0 ÷ 11.6 ≈ 6.8×', near(Math.round(g('002', 'C') / g('002', 'A') * 10) / 10, 6.8)],
+      ['Latin America: Group A about half of Group B', near(Math.round(g('009', 'A') / g('009', 'B') * 10) / 10, 0.5)],
+      ['Africa: Group C less than half of Group A; more than doubled', g('007', 'C') / g('007', 'A') < 0.5 && g('007', 'A') / g('007', 'C') > 2],
+      ['Asia is the most common region in every group', ['A', 'B', 'C'].every(function (grp) { return REGION.every(function (ln) { return g('006', grp) >= g(ln, grp); }); })],
+      ['Group B is the smallest group; Group C the largest', g('001', 'B') < g('001', 'A') && g('001', 'A') < g('001', 'C')],
+      ['Group A: highest graduate-degree share; Group B: highest without a diploma', g('052', 'A') > g('052', 'B') && g('052', 'A') > g('052', 'C') && g('048', 'B') > g('048', 'A') && g('048', 'B') > g('048', 'C')],
+      ['Group A: highest median income estimate and highest poverty rate', g('110', 'A') > g('110', 'B') && g('110', 'A') > g('110', 'C') && g('113', 'A') > g('113', 'B') && g('113', 'A') > g('113', 'C')],
+      ['Group A vs C income: the margins overlap, as the lesson says', Math.abs(g('110', 'A') - g('110', 'C')) < Math.sqrt(11184 * 11184 + 3852 * 3852)],
+      ['Group B: highest labor-force share; Group A: most enrolled in school', g('058', 'B') > g('058', 'A') && g('058', 'B') > g('058', 'C') && g('042', 'A') > g('042', 'B') && g('042', 'A') > g('042', 'C')],
+      ['Group A: highest share of full-time workers earning $75,000+', g('095', 'A') > g('095', 'B') && g('095', 'A') > g('095', 'C')],
+      ['33,946 × 0.222 ≈ 7,536 and 52,504 × 0.607 ≈ 31,870 homeowner households', near(Math.round(g('098', 'A') * g('126', 'A') / 100), 7536) && near(Math.round(g('098', 'C') * g('126', 'C') / 100), 31870)],
+      ['Group C has about 4 times as many homeowner households (31,845 ÷ 7,540)', near(Math.round(g('141', 'C') / g('141', 'A')), 4)],
+      ['Group C has about 1.1 times as many people as Group A', near(Math.round(g('001', 'C') / g('001', 'A') * 10) / 10, 1.1)],
+      ['Overall 82.3% speak another language; groups range 75.9% to 87.6%', near(g('055', 'T'), 82.3) && near(Math.min(g('055', 'A'), g('055', 'B'), g('055', 'C')), 75.9) && near(Math.max(g('055', 'A'), g('055', 'B'), g('055', 'C')), 87.6)],
+      ['The three groups add up to the total', near(g('001', 'A') + g('001', 'B') + g('001', 'C'), g('001', 'T'))]
+    ];
+    CALCS.forEach(function (c) { check('Calculation: ' + c[0], c[1]); });
+
+    // ---- 4. Quiz answer keys ----
+    function keyed(q) { var b = Array.prototype.filter.call(doc.querySelectorAll('#' + q + ' .option-btn'), function (x) { return /,true\)$/.test(x.getAttribute('onclick')); }); return b.length === 1 ? b[0].textContent.replace(/^[A-D]/, '') : null; }
+    check('Quiz 1 key: 67.4 percentage points (88.4 − 21.0)', /^67\.4 percentage points$/.test(keyed('q1')) && near(g('003', 'A') - g('003', 'C'), 67.4, 1e-9), keyed('q1'));
+    check('Quiz 2 key: about 2.1× (26.3 ÷ 12.6)', /2\.1×/.test(keyed('q2')) && near(Math.round(g('009', 'B') / g('009', 'A') * 10) / 10, 2.1), keyed('q2'));
+    check('Quiz 3 key: about 31,900 households (52,504 × 0.607)', /31,900/.test(keyed('q3')) && near(Math.round(g('098', 'C') * g('126', 'C') / 100 / 100) * 100, 31900) && /52,504 households/.test(doc.getElementById('q3').textContent), keyed('q3'));
+    check('Quiz 4 key: rates 22.2% vs 60.7% of households, about 4 times as many', /22\.2% vs 60\.7%/.test(keyed('q4')) && /4 times/.test(keyed('q4')) && !/has the most people/.test(doc.getElementById('q4').textContent), keyed('q4'));
+    check('Quiz 5 numbers: 18.4%, $95,809, 10.6%, $86,085', /18\.4%/.test(doc.getElementById('q5').textContent) && /\$95,809/.test(doc.getElementById('q5').textContent) && /10\.6%/.test(doc.getElementById('q5').textContent) && /\$86,085/.test(doc.getElementById('q5').textContent) && /bigger differences within it/.test(keyed('q5')));
+
+    // ---- 5. Accessibility basics ----
+    function lum(hex) {
+      var h = hex.replace('#', ''), c = [0, 2, 4].map(function (i) { var v = parseInt(h.substr(i, 2), 16) / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    }
+    function contrast(a, b) { var x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+    var rs = win.getComputedStyle(doc.documentElement), muted = rs.getPropertyValue('--muted').trim();
+    ['--bg', '--surface', '--surface2'].forEach(function (bg) {
+      var b = rs.getPropertyValue(bg).trim();
+      check('Contrast: grey text on ' + bg + ' (' + muted + ' on ' + b + ')', contrast(muted, b) >= 4.5, contrast(muted, b).toFixed(2) + ':1');
+    });
+    function key(el, k) { el.dispatchEvent(new win.KeyboardEvent('keydown', { key: k, bubbles: true })); }
+    var cardsOk = Array.prototype.every.call(doc.querySelectorAll('.reveal-card, .prompt-card, .step-dot'), function (c) { return c.tabIndex === 0 && c.getAttribute('role') === 'button'; });
+    check('Keyboard: every reveal card, reflection question and step dot is a focusable button', cardsOk && doc.querySelectorAll('.prompt-card').length === 4 && doc.querySelectorAll('.reveal-card').length === 3);
+    var card = doc.querySelector('.reveal-card'); key(card, 'Enter');
+    check('Keyboard: Enter opens a reveal card', card.classList.contains('open') && card.getAttribute('aria-expanded') === 'true');
+    var prompt = doc.querySelectorAll('.prompt-card')[2]; key(prompt, ' ');
+    check('Keyboard: Space picks a reflection question and unlocks the answer box', prompt.getAttribute('aria-pressed') === 'true' && !doc.getElementById('reflectionText').disabled);
+    check('The name and answer boxes are labeled', !!doc.querySelector('label[for="senderName"]') && !!doc.querySelector('label[for="reflectionText"]'));
+    var described = Object.keys(win.Chart.instances).map(function (k) { return win.Chart.instances[k].canvas; });
+    check('Every chart has a text description with its numbers', described.length === 8 && described.every(function (c) { return c.getAttribute('role') === 'img' && /\d/.test(c.getAttribute('aria-label') || ''); }), doc.getElementById('introIncomeChart').getAttribute('aria-label'));
+    check('Quiz feedback and chart insights are read aloud', doc.querySelectorAll('.feedback[aria-live]').length === 5 && doc.getElementById('insight-text').getAttribute('aria-live') === 'polite');
+    check('Motion stops when the device asks for less', /prefers-reduced-motion: reduce/.test(doc.documentElement.outerHTML));
+
+    // ---- 6. Privacy: no outside loads, no stored data, no personal contact details ----
+    var html = doc.documentElement.outerHTML;
+    ['<link', '@import', '<script src', 'url(http', 'cdn-cgi', 'fetch(', 'XMLHttpRequest', 'sendBeacon', 'localStorage', 'sessionStorage', 'indexedDB', 'document.cookie'].forEach(function (bad) {
+      check('Privacy: no "' + bad + '"', html.indexOf(bad) < 0);
+    });
+    check('Privacy: no email addresses', !/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.(org|com|edu|net)/.test(html));
+    check('Reflection says to hand it in the way the teacher asks', (body.textContent.match(/hand (it|in the file) (in )?the way your teacher asks/g) || []).length >= 2);
+    check('Chart.js 4.4.1 is built in', typeof win.Chart === 'function' && win.Chart.version === '4.4.1', win.Chart && win.Chart.version);
+
+    show();
+  }
+
+  function show() {
+    var list = document.getElementById('results');
+    results.forEach(function (r) {
+      var li = document.createElement('li'); li.className = r[1] ? 'pass' : 'fail';
+      li.textContent = (r[1] ? '✓ ' : '✗ ') + r[0] + (r[2] ? '  (' + r[2] + ')' : '');
+      list.appendChild(li);
+    });
+    document.getElementById('summary').textContent = (results.length - fails) + ' of ' + results.length + ' passed' + (fails ? '. ' + fails + ' failed.' : '.');
+  }
+
+  var frame = document.getElementById('tool');
+  frame.addEventListener('load', function () {
+    fetch('sources.md').then(function (r) { if (!r.ok) throw new Error('sources.md not found'); return r.text(); })
+      .then(function (t) { run(frame.contentWindow, t); })
+      .catch(function (e) { check('The checks could run', false, e.message + ' (open this page from a web server, not as a file)'); show(); });
+  });
+})();
+</script>
+</body>
+</html>
